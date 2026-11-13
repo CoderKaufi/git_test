@@ -252,6 +252,10 @@ def try_trade(led, cfg, sym, today, now_local, now_arg):
     if not bars:
         return False
     price = round(bars[-1]["c"], 2)
+    level = entry.get("level") or (entry.get("opening_range") or {}).get("high")
+    if level and price <= level:
+        log("  %s: back at %.2f, not above the range high %.2f any more: breakout failed, skipped" % (sym, price, level))
+        return False
     # plan from the price we would actually pay now, not the old trigger price
     code, plan, err = skill("trader-exit/exit.py", "plan", "--entry", str(price), "--write", now=now_arg)
     if not plan or code != 0:
@@ -349,25 +353,35 @@ def build_report(led, today):
     wins = [t for t in all_t if t["pnl"] > 0]
     started = dt.date.fromisoformat(led.get("started") or d)
     lines = ["Výpis z cvičného účtu: %s" % cz_date(today),
-             "(Fiktivní peníze, nic nebylo odesláno brokerovi.)", "",
-             "Hodnota účtu:       %s" % cz_money(eq),
-             "Dnešní výsledek:    %s" % cz_money(day_pnl, sign=True),
-             "Celkový výsledek:   %s (%s %%) od %d. %d. %d" % (cz_money(eq - start, sign=True),
-                 cz_num((eq - start) / start * 100, sign=True), started.day, started.month, started.year),
-             "Počáteční vklad:    %s" % cz_money(start),
-             "Hotovost:           %s" % cz_money(led["cash"]), ""]
+             "(Fiktivní peníze, nic nebylo odesláno brokerovi.)", ""]
     if todays:
-        lines.append("Dnešní obchody (newyorský čas; prodej = 5minutová svíčka, ve které se cena dotkla):")
-        for t in todays:
+        lines.append("DNEŠNÍ OBCHODY (%d), časy newyorské:" % len(todays))
+        for i, t in enumerate(todays, 1):
             reason = CZ_REASONS.get(t["exit_reason"]) or (
-                "uzavřeno v %s" % t["exit_reason"].split()[-1] if t["exit_reason"].startswith("flat by")
-                else t["exit_reason"])
-            lines.append("  %s  %d ks: nákup v %s za %s, prodej v %s za %s (%s)"
-                         % (t["symbol"], t["qty"], t["entry_time"], cz_num(t["entry"]), t["exit_time"],
-                            cz_num(t["exit"]), reason))
-            lines.append("      výsledek %s, %sR" % (cz_money(t["pnl"], sign=True), cz_num(t["R"] or 0, sign=True)))
+                "uzavřeno před koncem dne" if t["exit_reason"].startswith("flat by") else t["exit_reason"])
+            lines.append("")
+            lines.append("%d) %s: %s %s (%sR)" % (i, t["symbol"], "ZISK" if t["pnl"] > 0 else "ZTRÁTA" if t["pnl"] < 0 else "NULA",
+                                               cz_money(t["pnl"], sign=True), cz_num(t["R"] or 0, sign=True)))
+            lines.append("   Nákup:  %d ks v %s za %s = %s" % (t["qty"], t["entry_time"], cz_num(t["entry"]),
+                                                          cz_money(t["qty"] * t["entry"])))
+            end = (dt.datetime.strptime(t["exit_time"], "%H:%M") + dt.timedelta(minutes=5)).strftime("%H:%M")
+            lines.append("   Prodej: %d ks v %s–%s za %s = %s (%s)" % (t["qty"], t["exit_time"], end, cz_num(t["exit"]),
+                                                               cz_money(t["qty"] * t["exit"]), reason))
+            orng = t.get("opening_range") or {}
+            why = "průraz ranního rozpětí"
+            if orng.get("high") and orng.get("low"):
+                why += " %s–%s" % (cz_num(orng["low"]), cz_num(orng["high"]))
+            lines.append("   Proč:   %s; stop-loss %s, cíl %s" % (why, cz_num(t["stop"]), cz_num(t["target"])))
     else:
         lines.append("Dnes žádné obchody: žádný signál neprošel všemi pravidly.")
+    lines += ["",
+              "ÚČET:",
+              "Hodnota účtu:       %s" % cz_money(eq),
+              "Dnešní výsledek:    %s" % cz_money(day_pnl, sign=True),
+              "Celkový výsledek:   %s (%s %%) od %d. %d. %d" % (cz_money(eq - start, sign=True),
+                  cz_num((eq - start) / start * 100, sign=True), started.day, started.month, started.year),
+              "Počáteční vklad:    %s" % cz_money(start),
+              "Hotovost:           %s" % cz_money(led["cash"])]
     if led["positions"]:
         lines += ["", "Stále otevřené pozice (uzavřou se při dalším spuštění):"]
         for p in led["positions"]:
@@ -401,9 +415,12 @@ def build_report(led, today):
     return "\n".join(lines) + "\n", day_pnl, eq
 
 
-def report_title(today, day_pnl, eq, simulated=False):
-    return "%sCvičný účet %d. %d. %d: dnes %s, účet %s" % (
-        "SIMULACE – " if simulated else "", today.day, today.month, today.year,
+def report_title(today, day_pnl, eq, trades=(), simulated=False):
+    n = len(trades)
+    what = ("%d %s (%s)" % (n, cz_plural(n, "obchod", "obchody", "obchodů"),
+                            ", ".join(t["symbol"] for t in trades)) if n else "bez obchodů")
+    return "%sCvičný účet %d. %d.: %s, dnes %s, účet %s" % (
+        "SIMULACE – " if simulated else "", today.day, today.month, what,
         cz_money(day_pnl, sign=True), cz_money(eq))
 
 
@@ -505,7 +522,8 @@ def main(argv=None):
         (REPORTS / ("%s.txt" % today.isoformat())).write_text(body)
         day.update({"pnl": day_pnl, "equity": eq})
         log(body)
-        subject = report_title(today, day_pnl, eq, simulated=a.simulate)
+        subject = report_title(today, day_pnl, eq, [t for t in led["trades"] if t["date"] == today.isoformat()],
+                               simulated=a.simulate)
         if a.simulate:
             body = ("SIMULACE: zkušební přehrání dne %d. %d. %d na cvičném účtu, ne skutečný výpis.\n\n"
                     % (today.day, today.month, today.year)) + body
