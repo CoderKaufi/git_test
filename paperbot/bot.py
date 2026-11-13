@@ -22,6 +22,7 @@ Usage:
   python3 paperbot/bot.py --test-notify        # one test push to the ntfy app
 """
 import argparse
+import base64
 import datetime as dt
 import importlib.util
 import json
@@ -310,7 +311,35 @@ def equity(led):
     return round(led["cash"] + sum(p["qty"] * p["entry"] for p in led["positions"]), 2)
 
 
+CZ_DAYS = ["pondělí", "úterý", "středa", "čtvrtek", "pátek", "sobota", "neděle"]
+CZ_MONTHS = ["ledna", "února", "března", "dubna", "května", "června", "července", "srpna",
+             "září", "října", "listopadu", "prosince"]
+CZ_REASONS = {"stop": "stop-loss", "target": "cíl (2R)", "session ended": "konec obchodního dne"}
+
+
+def cz_money(x, sign=False):
+    """10000.5 -> '10 000,50 USD' (Czech style); sign=True adds + or −."""
+    txt = format(abs(x), ",.2f").replace(",", " ").replace(".", ",")
+    pre = ("+" if x > 0 else "−" if x < 0 else "") if sign else ("−" if x < 0 else "")
+    return "%s%s USD" % (pre, txt)
+
+
+def cz_num(x, digits=2, sign=False):
+    txt = format(abs(x), ",.%df" % digits).replace(",", " ").replace(".", ",")
+    return (("+" if x > 0 else "−" if x < 0 else "") if sign else ("−" if x < 0 else "")) + txt
+
+
+def cz_date(d):
+    return "%s %d. %s %d" % (CZ_DAYS[d.weekday()], d.day, CZ_MONTHS[d.month - 1], d.year)
+
+
+def cz_plural(n, one, few, many):
+    return one if n == 1 else few if 2 <= n <= 4 else many
+
+
 def build_report(led, today):
+    """The day's statement, in Czech. Returns (text, day P&L, account value)."""
+    cfg = read_json(CONFIG)
     d = today.isoformat()
     todays = [t for t in led["trades"] if t["date"] == d]
     day_pnl = round(sum(t["pnl"] for t in todays), 2)
@@ -318,46 +347,64 @@ def build_report(led, today):
     start = led["starting_cash"]
     all_t = led["trades"]
     wins = [t for t in all_t if t["pnl"] > 0]
-    lines = ["Paper trading report for %s" % today.strftime("%A %d %B %Y"),
-             "(Fake money. Nothing was sent to a broker.)", "",
-             "Account value  $%s" % format(eq, ",.2f"),
-             "Today's P&L    %+.2f" % day_pnl,
-             "Total P&L      %+.2f (%+.2f%% since %s, starting with $%s)"
-             % (eq - start, (eq - start) / start * 100, led.get("started"), format(start, ",.0f")),
-             "Cash           $%s" % format(led["cash"], ",.2f"), ""]
+    started = dt.date.fromisoformat(led.get("started") or d)
+    lines = ["Výpis z cvičného účtu: %s" % cz_date(today),
+             "(Fiktivní peníze, nic nebylo odesláno brokerovi.)", "",
+             "Hodnota účtu:       %s" % cz_money(eq),
+             "Dnešní výsledek:    %s" % cz_money(day_pnl, sign=True),
+             "Celkový výsledek:   %s (%s %%) od %d. %d. %d" % (cz_money(eq - start, sign=True),
+                 cz_num((eq - start) / start * 100, sign=True), started.day, started.month, started.year),
+             "Počáteční vklad:    %s" % cz_money(start),
+             "Hotovost:           %s" % cz_money(led["cash"]), ""]
     if todays:
-        lines.append("Today's trades (times are New York, out = the 5-minute bar that hit):")
+        lines.append("Dnešní obchody (newyorský čas; prodej = 5minutová svíčka, ve které se cena dotkla):")
         for t in todays:
-            lines.append("  %-6s %3d sh  in %s @ %.2f  out in the %s bar @ %.2f  %-14s %+8.2f  %+.2fR"
-                         % (t["symbol"], t["qty"], t["entry_time"], t["entry"], t["exit_time"], t["exit"],
-                            t["exit_reason"], t["pnl"], t["R"] or 0))
+            reason = CZ_REASONS.get(t["exit_reason"]) or (
+                "uzavřeno v %s" % t["exit_reason"].split()[-1] if t["exit_reason"].startswith("flat by")
+                else t["exit_reason"])
+            lines.append("  %s  %d ks: nákup v %s za %s, prodej v %s za %s (%s)"
+                         % (t["symbol"], t["qty"], t["entry_time"], cz_num(t["entry"]), t["exit_time"],
+                            cz_num(t["exit"]), reason))
+            lines.append("      výsledek %s, %sR" % (cz_money(t["pnl"], sign=True), cz_num(t["R"] or 0, sign=True)))
     else:
-        lines.append("No trades today.")
+        lines.append("Dnes žádné obchody: žádný signál neprošel všemi pravidly.")
     if led["positions"]:
-        lines.append("")
-        lines.append("Still open (should not happen for a day trade; closed next run):")
+        lines += ["", "Stále otevřené pozice (uzavřou se při dalším spuštění):"]
         for p in led["positions"]:
-            lines.append("  %s %d @ %.2f" % (p["symbol"], p["qty"], p["entry"]))
-    lines += ["", "All time: %d trades, %d winners (%.0f%%), average %.2fR"
-              % (len(all_t), len(wins), (len(wins) / len(all_t) * 100) if all_t else 0,
-                 (sum(t["R"] or 0 for t in all_t) / len(all_t)) if all_t else 0)]
+            lines.append("  %s %d ks za %s" % (p["symbol"], p["qty"], cz_num(p["entry"])))
+    n = len(all_t)
+    lines += ["", "Celkem: %d %s, z toho %d %s (%s %%), průměr %sR"
+              % (n, cz_plural(n, "obchod", "obchody", "obchodů"), len(wins),
+                 cz_plural(len(wins), "ziskový", "ziskové", "ziskových"),
+                 cz_num(len(wins) / n * 100 if n else 0, 0), cz_num(sum(t["R"] or 0 for t in all_t) / n if n else 0, sign=True)),
+              "(R = riziko obchodu, tedy vzdálenost od nákupu ke stop-lossu; +2R = cíl, −1R = stop-loss.)"]
     syms = sorted({t["symbol"] for t in todays})
     if syms:
         code, news, err = skill("trader-news/news.py", "--tickers", *syms, "--no-sec", "--dry-run",
                                 "--hours", "24", "--all")
         items = (news or {}).get("items") or []
         if items:
-            lines += ["", "News on today's tickers:"]
-            for it in items[:10]:
-                lines.append("  %s  %s" % (",".join(it.get("tickers", [])) or it.get("ticker", ""),
-                                           it.get("title", "")))
-    lines += ["", "Rules: $%s budget, max $%s loss a trade, $%s a day, %d trades a day, "
-              "opening-range breakouts, stop at the range midpoint, 2R target, flat by 15:55 ET."
-              % tuple([format(led["starting_cash"], ",.0f")] + [str(x) for x in
-                      (read_json(CONFIG)["max_loss_per_trade_usd"], read_json(CONFIG)["max_daily_loss_usd"])]
-                      + [read_json(CONFIG)["max_trades_per_day"]]),
-              "Education and tooling, not financial advice."]
+            lines += ["", "Zprávy k dnešním akciím (anglicky, Yahoo Finance):"]
+            per = {}
+            for it in items:
+                tk = ",".join(it.get("tickers", [])) or it.get("ticker", "")
+                if per.get(tk, 0) >= 3:
+                    continue
+                per[tk] = per.get(tk, 0) + 1
+                lines.append("  %s: %s" % (tk, it.get("title", "")))
+    lines += ["", "Pravidla: vklad %s, max. ztráta %s na obchod a %s za den, nejvýše %d obchody denně. "
+              "Strategie: průraz ranního rozpětí (prvních 15 minut), stop-loss ve středu rozpětí, cíl 2R, "
+              "nákupy 9:50–15:00 a vše prodáno do 15:55 newyorského času."
+              % (cz_money(start), cz_money(cfg["max_loss_per_trade_usd"]), cz_money(cfg["max_daily_loss_usd"]),
+                 cfg["max_trades_per_day"]),
+              "Slouží ke vzdělávání, nejde o investiční doporučení."]
     return "\n".join(lines) + "\n", day_pnl, eq
+
+
+def report_title(today, day_pnl, eq, simulated=False):
+    return "%sCvičný účet %d. %d. %d: dnes %s, účet %s" % (
+        "SIMULACE – " if simulated else "", today.day, today.month, today.year,
+        cz_money(day_pnl, sign=True), cz_money(eq))
 
 
 def send_email(subject, body):
@@ -389,7 +436,7 @@ def send_ntfy(title, body, tags="chart_with_upwards_trend"):
     if len(data) > 4000:                      # ntfy turns longer messages into a file attachment
         data = data[:3900].decode("utf-8", "ignore").encode("utf-8") + b"\n... (full report in paperbot/reports/)"
     req = urllib.request.Request(server + "/" + topic, data=data, method="POST",
-                                 headers={"Title": title.encode("ascii", "replace").decode(),
+                                 headers={"Title": "=?UTF-8?B?%s?=" % base64.b64encode(title.encode()).decode(),
                                           "Tags": tags, "User-Agent": UA})
     with urllib.request.urlopen(req, timeout=30) as r:
         r.read()
@@ -417,10 +464,11 @@ def main(argv=None):
     ap.add_argument("--no-send", "--no-email", dest="no_send", action="store_true",
                     help="build the report but do not push or email it")
     ap.add_argument("--test-notify", action="store_true", help="send one test notification and stop")
+    ap.add_argument("--simulate", action="store_true", help="mark the report as a simulation (for --now replays)")
     a = ap.parse_args(argv)
     if a.test_notify:
-        ok = deliver("Paper trading bot: test", "If you can read this on your phone, the daily report "
-                     "will reach you here after each trading day.")
+        ok = deliver("Obchodní bot: zkouška", "Pokud tohle čtete v telefonu, denní výpis z cvičného účtu "
+                     "vám sem přijde po každém obchodním dni.")
         return 0 if ok else 1
 
     cfg = read_json(CONFIG)
@@ -457,7 +505,10 @@ def main(argv=None):
         (REPORTS / ("%s.txt" % today.isoformat())).write_text(body)
         day.update({"pnl": day_pnl, "equity": eq})
         log(body)
-        subject = "Paper trading %s: %+.2f today, account $%s" % (today.isoformat(), day_pnl, format(eq, ",.2f"))
+        subject = report_title(today, day_pnl, eq, simulated=a.simulate)
+        if a.simulate:
+            body = ("SIMULACE: zkušební přehrání dne %d. %d. %d na cvičném účtu, ne skutečný výpis.\n\n"
+                    % (today.day, today.month, today.year)) + body
         sent = False if a.no_send else deliver(subject, body)
         day["reported"] = True
         day["sent"] = sent
