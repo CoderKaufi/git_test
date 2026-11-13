@@ -1,0 +1,48 @@
+name: Paper trading bot
+
+# Every hour at :07, Monday to Friday, 14:07-21:07 UTC. That covers the NYSE
+# session in both winter (EST) and summer (EDT) time plus one run after the
+# close, which writes and emails the daily report. The bot reads the New York
+# clock and the NYSE holiday list itself, so extra runs do nothing.
+on:
+  schedule:
+    - cron: "7 14-21 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: paperbot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run the bot
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 paperbot/bot.py
+
+      - name: Save the paper account
+        run: |
+          git config user.name "paperbot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add paperbot/ledger.json paperbot/reports 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "paperbot: update paper account"
+            git pull --rebase
+            git push
+          fi
