@@ -8,6 +8,11 @@ on:
   schedule:
     - cron: "7 14-21 * * 1-5"
   workflow_dispatch:
+    inputs:
+      test_notify:
+        description: "Only send a test notification to the ntfy app"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -29,12 +34,18 @@ jobs:
 
       - name: Run the bot
         env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
-        run: python3 paperbot/bot.py
+        run: |
+          if [ "${{ inputs.test_notify }}" = "true" ]; then
+            python3 paperbot/bot.py --test-notify
+          else
+            python3 paperbot/bot.py
+          fi
 
       - name: Save the paper account
         run: |

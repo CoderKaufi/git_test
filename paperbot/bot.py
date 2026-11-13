@@ -10,8 +10,8 @@ Run once an hour while the NYSE is open (GitHub Actions does this). Each run:
      from the CURRENT price) -> trader-timemachine (skip if the replays expect a
      loss) -> trader-budget (size) -> trader-risk (PASS or skip). A PASS is
      filled on paper at the current price. Nothing is ever sent to a broker.
-  3. After the close: writes the day's report to paperbot/reports/ and, when
-     SMTP settings are in the environment, emails it.
+  3. After the close: writes the day's report to paperbot/reports/ and pushes it
+     to the ntfy app (NTFY_TOPIC) and/or emails it (SMTP_USER, SMTP_PASSWORD, MAIL_TO).
 
 The account lives in paperbot/ledger.json. Everything is fake money.
 
@@ -19,6 +19,7 @@ Usage:
   python3 paperbot/bot.py                       # one run, real clock
   python3 paperbot/bot.py --now "2026-11-12 11:05"   # replay a past moment
   python3 paperbot/bot.py --report-only        # (re)build today's report
+  python3 paperbot/bot.py --test-notify        # one test push to the ntfy app
 """
 import argparse
 import datetime as dt
@@ -376,14 +377,51 @@ def send_email(subject, body):
     return True
 
 
+def send_ntfy(title, body, tags="chart_with_upwards_trend"):
+    """Push to the ntfy app: POST https://ntfy.sh/<NTFY_TOPIC>. The topic name is the
+    only key, so it lives in a repository secret, never in this repo."""
+    topic = (os.environ.get("NTFY_TOPIC") or "").strip()
+    if not topic:
+        log("  ntfy skipped: NTFY_TOPIC is not set")
+        return False
+    server = (os.environ.get("NTFY_SERVER") or "https://ntfy.sh").rstrip("/")
+    data = body.encode("utf-8")
+    if len(data) > 4000:                      # ntfy turns longer messages into a file attachment
+        data = data[:3900].decode("utf-8", "ignore").encode("utf-8") + b"\n... (full report in paperbot/reports/)"
+    req = urllib.request.Request(server + "/" + topic, data=data, method="POST",
+                                 headers={"Title": title.encode("ascii", "replace").decode(),
+                                          "Tags": tags, "User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        r.read()
+    log("  report pushed to ntfy")
+    return True
+
+
+def deliver(title, body):
+    """Send the report every way that is configured; True if any worked."""
+    sent = False
+    for fn in (send_ntfy, send_email):
+        try:
+            sent = fn(title, body) or sent
+        except Exception as e:
+            log("  %s failed: %s" % (fn.__name__, e))
+    return sent
+
+
 # ---------------------------------------------------------------- main
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--now", help='pretend it is this New York time, "YYYY-MM-DD HH:MM"')
     ap.add_argument("--report-only", action="store_true")
-    ap.add_argument("--no-email", action="store_true")
+    ap.add_argument("--no-send", "--no-email", dest="no_send", action="store_true",
+                    help="build the report but do not push or email it")
+    ap.add_argument("--test-notify", action="store_true", help="send one test notification and stop")
     a = ap.parse_args(argv)
+    if a.test_notify:
+        ok = deliver("Paper trading bot: test", "If you can read this on your phone, the daily report "
+                     "will reach you here after each trading day.")
+        return 0 if ok else 1
 
     cfg = read_json(CONFIG)
     TRADER.mkdir(parents=True, exist_ok=True)
@@ -420,14 +458,9 @@ def main(argv=None):
         day.update({"pnl": day_pnl, "equity": eq})
         log(body)
         subject = "Paper trading %s: %+.2f today, account $%s" % (today.isoformat(), day_pnl, format(eq, ",.2f"))
-        sent = False
-        if not a.no_email:
-            try:
-                sent = send_email(subject, body)
-            except Exception as e:
-                log("  email failed: %s" % e)
+        sent = False if a.no_send else deliver(subject, body)
         day["reported"] = True
-        day["emailed"] = sent
+        day["sent"] = sent
     # keep the trigger memory short
     led["seen_triggers"] = {k: v for k, v in led["seen_triggers"].items() if k >= today.isoformat()}
     write_json(LEDGER, led)
