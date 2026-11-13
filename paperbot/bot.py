@@ -360,7 +360,7 @@ def build_report(led, today):
 
 
 def send_email(subject, body):
-    host = os.environ.get("SMTP_HOST") or "mail.gmx.net"
+    host = os.environ.get("SMTP_HOST") or "mail.gmx.com"
     user, pw, to = os.environ.get("SMTP_USER"), os.environ.get("SMTP_PASSWORD"), os.environ.get("MAIL_TO")
     if not (user and pw and to):
         log("  email skipped: SMTP_USER, SMTP_PASSWORD and MAIL_TO are not all set")
