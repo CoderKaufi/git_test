@@ -1,0 +1,17 @@
+Výpis z cvičného účtu: pátek 13. listopadu 2026
+(Fiktivní peníze, nic nebylo odesláno brokerovi.)
+
+Dnes žádné obchody: žádný signál neprošel všemi pravidly.
+
+ÚČET:
+Hodnota účtu:       10 000,00 USD
+Dnešní výsledek:    0,00 USD
+Celkový výsledek:   0,00 USD (0,00 %) od 13. 11. 2026
+Počáteční vklad:    10 000,00 USD
+Hotovost:           10 000,00 USD
+
+Celkem: 0 obchodů, z toho 0 ziskových (0 %), průměr 0,00R
+(R = riziko obchodu, tedy vzdálenost od nákupu ke stop-lossu; +2R = cíl, −1R = stop-loss.)
+
+Pravidla: vklad 10 000,00 USD, max. ztráta 100,00 USD na obchod a 300,00 USD za den, nejvýše 3 obchody denně. Strategie: průraz ranního rozpětí (prvních 15 minut), stop-loss ve středu rozpětí, cíl 2R, nákupy 9:50–15:00 a vše prodáno do 15:55 newyorského času.
+Slouží ke vzdělávání, nejde o investiční doporučení.

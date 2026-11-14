@@ -1,0 +1,16 @@
+{
+  "started": "2026-11-13",
+  "starting_cash": 10000,
+  "cash": 10000,
+  "positions": [],
+  "trades": [],
+  "days": {
+    "2026-11-13": {
+      "pnl": 0,
+      "equity": 10000,
+      "reported": true,
+      "sent": true
+    }
+  },
+  "seen_triggers": {}
+}
