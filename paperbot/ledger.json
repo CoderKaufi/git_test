@@ -22,6 +22,12 @@
       "equity": 10000,
       "reported": true,
       "sent": true
+    },
+    "2026-11-18": {
+      "pnl": 0,
+      "equity": 10000,
+      "reported": true,
+      "sent": true
     }
   },
   "seen_triggers": {}
